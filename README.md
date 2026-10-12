@@ -9,6 +9,7 @@
 ![Groq](https://img.shields.io/badge/Groq-gpt--oss--20b-F55036)
 ![Output](https://img.shields.io/badge/output-HTML%20report-1a6bb5)
 ![Status](https://img.shields.io/badge/status-production-success)
+![License](https://img.shields.io/badge/license-MIT-blue)
 
 </div>
 
@@ -140,3 +141,7 @@ Within about 30–60 seconds, the bot replies in the thread with the `.html` adv
 
 All credentials, webhook IDs, channel IDs, instance IDs and branding in this export have been **redacted**. Never commit a live n8n export: credential references and webhook IDs identify your instance.
 
+
+## License
+
+[MIT](LICENSE) © 2026 Rana Talha
