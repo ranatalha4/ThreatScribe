@@ -1,0 +1,368 @@
+{
+  "name": "ThreatScribe",
+  "nodes": [
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "your-advisory-channel",
+          "mode": "name"
+        },
+        "text": "=\n{{ $('Build Email Template3').item.json.slack_message }}\n",
+        "otherOptions": {
+          "thread_ts": {
+            "replyValues": {
+              "thread_ts": "={{ $('Slack Trigger4').item.json.ts }}"
+            }
+          },
+          "mrkdwn": true
+        }
+      },
+      "id": "node-send-advisory-message1",
+      "name": "Send Advisory Message1",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [
+        4704,
+        1616
+      ],
+      "webhookId": "REDACTED_WEBHOOK_ID",
+      "credentials": {
+        "slackApi": {
+          "id": "REDACTED_SLACK_CRED_ID",
+          "name": "Slack API Credential"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "trigger": [
+          "message",
+          "any_event"
+        ],
+        "channelId": {
+          "__rl": true,
+          "value": "YOUR_SLACK_CHANNEL_ID",
+          "mode": "list",
+          "cachedResultName": "your-advisory-channel"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.slackTrigger",
+      "typeVersion": 1,
+      "position": [
+        2384,
+        1616
+      ],
+      "id": "node-slack-trigger4",
+      "name": "Slack Trigger4",
+      "webhookId": "REDACTED_WEBHOOK_ID",
+      "credentials": {
+        "slackApi": {
+          "id": "REDACTED_SLACK_CRED_ID",
+          "name": "Slack API Credential"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "1",
+              "name": "url",
+              "value": "={{ ($json.message?.text || $json.text || '').match(/<?(https?:\\/\\/[^\\s|>]+)/)?.[1] }}",
+              "type": "string"
+            },
+            {
+              "id": "2",
+              "name": "channel",
+              "value": "={{ $json.channel }}",
+              "type": "string"
+            },
+            {
+              "id": "3",
+              "name": "thread_ts",
+              "value": "={{ $json.thread_ts || $json.ts }}",
+              "type": "string"
+            },
+            {
+              "id": "4",
+              "name": "user",
+              "value": "={{ $json.user }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "node-extract-url-metadata4",
+      "name": "Extract URL & Metadata4",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2688,
+        1616
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================================\n// Generic URL scraper for n8n Code node\n// Handles: redirects, slug typos on ID-based URLs, bot/CAPTCHA\n// walls, thin <article>/<main> extraction, and meta fallbacks.\n// ============================================================\n\n// ---- Input ----\nconst url = $json.url;\nif (!url || !url.startsWith('http')) {\n  throw new Error('No valid URL found in message.');\n}\n\n// ---- Canonicalize known ID-based URL patterns ----\n// Some sites resolve articles by a numeric ID and treat the slug as\n// cosmetic. If the slug is mistyped, fetching the bare ID form still\n// works. Add more patterns here as you run into other sites.\nfunction canonicalize(u) {\n  const patterns = [\n    { test: /dawn\\.com\\/news\\/(\\d+)/i, build: (m) => `https://www.dawn.com/news/${m[1]}` },\n    { test: /tribune\\.com\\.pk\\/story\\/(\\d+)/i, build: (m) => `https://tribune.com.pk/story/${m[1]}` },\n  ];\n  for (const p of patterns) {\n    const m = u.match(p.test);\n    if (m) return p.build(m);\n  }\n  return u;\n}\n\nconst fetchUrl = canonicalize(url);\n\n// ---- Fetch ----\nconst response = await this.helpers.httpRequest({\n  method: 'GET',\n  url: fetchUrl,\n  headers: {\n    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',\n    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',\n    'Accept-Language': 'en-US,en;q=0.9',\n    'Accept-Encoding': 'gzip, deflate, br',\n    'Cache-Control': 'no-cache',\n    'Pragma': 'no-cache',\n    'Sec-Fetch-Dest': 'document',\n    'Sec-Fetch-Mode': 'navigate',\n    'Sec-Fetch-Site': 'none',\n    'Sec-Fetch-User': '?1',\n    'Upgrade-Insecure-Requests': '1',\n    'Referer': 'https://www.google.com/'\n  },\n  returnFullResponse: true,\n  ignoreHttpStatusErrors: true,\n  timeout: 30000,\n  maxRedirects: 10\n});\n\nconst status = response.statusCode;\nconst html = response.body || '';\n\nif (status >= 400) {\n  throw new Error(`Request failed with status ${status} for URL: ${fetchUrl}`);\n}\n\n// ---- Shared helpers ----\nfunction decodeEntities(str) {\n  return str\n    .replace(/&nbsp;/g, ' ')\n    .replace(/&amp;/g, '&')\n    .replace(/&lt;/g, '<')\n    .replace(/&gt;/g, '>')\n    .replace(/&quot;/g, '\"')\n    .replace(/&#39;/g, \"'\")\n    .replace(/&#x27;/g, \"'\")\n    .replace(/&[a-z]+;/gi, ' ');\n}\n\nfunction extractMeta(html, prop) {\n  const re = new RegExp(`<meta[^>]+(?:property|name)=[\"']${prop}[\"'][^>]+content=[\"']([^\"']+)[\"']`, 'i');\n  const m = html.match(re);\n  return m ? decodeEntities(m[1]).trim() : null;\n}\n\nfunction stripBoilerplateTags(rawHtml) {\n  return rawHtml\n    .replace(/<script[\\s\\S]*?<\\/script>/gi, '')\n    .replace(/<style[\\s\\S]*?<\\/style>/gi, '')\n    .replace(/<nav[\\s\\S]*?<\\/nav>/gi, '')\n    .replace(/<footer[\\s\\S]*?<\\/footer>/gi, '')\n    .replace(/<header[\\s\\S]*?<\\/header>/gi, '')\n    .replace(/<aside[\\s\\S]*?<\\/aside>/gi, '')\n    .replace(/<!--[\\s\\S]*?-->/g, '')\n    .replace(/<[^>]+>/g, ' ');\n}\n\nfunction cleanText(rawHtml) {\n  return decodeEntities(stripBoilerplateTags(rawHtml))\n    .replace(/[ \\t]+/g, ' ')\n    .replace(/\\n{3,}/g, '\\n\\n')\n    .trim();\n}\n\nfunction extractFromTag(rawHtml, tag) {\n  const re = new RegExp(`<${tag}[^>]*>([\\\\s\\\\S]*?)<\\\\/${tag}>`, 'i');\n  const m = rawHtml.match(re);\n  return m ? m[1] : null;\n}\n\n// ---- Title, with fallbacks ----\nconst titleMatch = html.match(/<title[^>]*>([^<]+)<\\/title>/i);\nlet title = titleMatch ? decodeEntities(titleMatch[1]).replace(/\\s+/g, ' ').trim() : null;\nif (!title) title = extractMeta(html, 'og:title');\nif (!title) title = fetchUrl;\n\n// ---- Bot-block / CAPTCHA detection (used for a clearer error message only) ----\nconst lowerHtml = html.toLowerCase();\nconst blockSignals = [\n  'checking your browser before accessing',\n  'attention required! | cloudflare',\n  'enable javascript and cookies to continue',\n  'access denied',\n  'are you a robot',\n  'verify you are human',\n  'captcha'\n];\nconst looksBlocked = html.length < 5000 && blockSignals.some(sig => lowerHtml.includes(sig));\n\n// ---- Content extraction, narrowest-to-widest ----\n// 1) Prefer <article>, then <main>, since they usually hold the real content\n//    with the least nav/footer/sidebar noise.\nlet text = '';\nconst articleHtml = extractFromTag(html, 'article');\nconst mainHtml = extractFromTag(html, 'main');\n\nif (articleHtml) text = cleanText(articleHtml);\nif (text.length < 100 && mainHtml) text = cleanText(mainHtml);\n\n// 2) Fall back to the full document if narrower extraction was too thin.\nif (text.length < 100) text = cleanText(html);\n\n// 3) Last resort: meta description, so we still return something usable.\nif (text.length < 100) {\n  const metaDesc = extractMeta(html, 'og:description') || extractMeta(html, 'description');\n  if (metaDesc) text = metaDesc;\n}\n\nconst content = text.substring(0, 12000);\n\nif (content.length < 100) {\n  const reason = looksBlocked\n    ? 'page appears to be behind a bot-check/CAPTCHA wall'\n    : `status ${status}, raw html length ${html.length}`;\n  throw new Error(`Could not extract content from URL: ${fetchUrl} (${reason})`);\n}\n\nreturn {\n  title,\n  mainContent: content,\n  url: fetchUrl,\n  originalUrl: url,\n  statusCode: status\n};"
+      },
+      "id": "node-fetch-extract-content3",
+      "name": "Fetch & Extract Content3",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2912,
+        1616
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const articleTitle = $json.title || '';\nconst articleContent = $json.mainContent || '';\nconst url = $json.url || '';\nconst today = new Date();\nconst dd   = String(today.getDate()).padStart(2, '0');\nconst mm   = String(today.getMonth() + 1).padStart(2, '0');\nconst yyyy = today.getFullYear();\nconst today_date  = `${dd}/${mm}/${yyyy}`;\nconst advisory_id = `TADV-${dd}${mm}${yyyy}`;\n\nconst soc_prompt = `MSSP CTI Analyst at YourOrg. Direct, specific, no filler. Complete ALL 8 sections — never stop early. Keep every section SHORT.\n\nBANNED: delve, robust, leverage, crucial, comprehensive, paramount, streamline, \"it is worth noting\", \"in summary\", \"this highlights\", \"based on the article\", \"organizations are urged to\". Unknown = \"Not publicly disclosed\". Never invent facts.\nCVSS severity: 9.0-10.0=Critical, 7.0-8.9=High, 4.0-6.9=Medium, 0.1-3.9=Low.\nCVSS RULE: If article does not state CVSS score, estimate it from impact and write ~X.X (estimated). NEVER write N/A for severity or CVSS — always provide a value.\n\nARTICLE: ${articleTitle} | ${url}\n${articleContent.substring(0, 2000)}\n\n---\n# Threat Advisory: [title]\n**Advisory ID:** ${advisory_id} | **Date:** ${today_date} | **Classification:** Internal | **Version:** 1.0\n**Severity:** [REQUIRED] | **CVSS:** [REQUIRED] | **CVE(s):** [REQUIRED]\n\n## 1. Executive Summary\n2 paragraphs, 3 sentences each. What it is, how exploited, business risk. No citations.\n\n## 2. Threat Overview\n| Field | Details |\n|-------|---------|\n| Threat Name/Identifier | [CVE ID or name] |\n| Threat Type | [e.g. SSRF, RCE, Auth Bypass] |\n| Threat Actor(s) | [name or Not publicly disclosed] |\n| Motivation | [value or Not publicly disclosed] |\n| Initial Discovery Date | [Month YYYY] |\n| Discovered By | [name or omit row] |\n| Exploitation Status | [Active/PoC/Unconfirmed] |\n\n## 3. Technical Details\n- **Attack Vector:** [protocol, port, auth needed. Use CVE knowledge if article lacks detail.]\n- **Exploited Vulnerability:** [CVE + root cause + CWE]\n- **Exploitation Chain:** 1.[step] 2.[step] 3.[step] 4.[step]\n- **Potential Impact:** [RCE/exfil/privesc — specific]\n- **Vendor Mitigation:** [exact patch or workaround]\n\n## 4. Affected Systems / Impact\n| Component | Affected Versions | Remediation |\n|-----------|-------------------|-------------|\n[one row per component]\n**Enterprise Exposure:** [1 sentence on blast radius]\n\n## 5. Recommendations\n**Immediate (24h):** 1.[action] 2.[action]\n**Medium-Term (1-2w):** 1.[action] 2.[action]\n**Long-Term:** 1.[action] 2.[action]\n\n## 6. MSSP Detection & Response\n**Detection Coverage:**\n- **SIEM:** [log source + pattern in \\`backticks\\`]\n- **EDR:** [process/binary in \\`backticks\\`]\n- **IDS/IPS:** [network signature]\n**Automated Response:**\n- [trigger + action]\n- [WAF/firewall rule]\n**Manual Actions:**\n- [\\`exact command\\` + expected output]\n- [\\`version check command\\`]\n**Client-Specific Notes:**\n- [upgrade instruction with exact version]\n- [post-patch step]\n\n## 7. Indicators of Compromise (IOCs)\nScan for IPs, domains, hashes, paths, commands, HTTP paths.\nIF found: | Type | Indicator | Description |\nIF none: NO_IOC_FOUND\nNever fabricate. Never placeholder rows.\n\n## 8. References & Resources\nEVERY line must be a markdown link with real URL. No plain text lines.\n- [Original Article](${url})\n- [GitLab CVE Advisory](https://about.gitlab.com/releases/categories/releases/)\n- [NVD Entry](https://nvd.nist.gov/vuln/detail/CVE-REPLACE-WITH-ACTUAL-ID)\nIf you know the vendor advisory URL, use it. Never write plain text without a URL.`;\n\nreturn { prompt: soc_prompt, advisory_id, today_date };"
+      },
+      "id": "node-build-ai-prompt4",
+      "name": "Build AI Prompt4",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3136,
+        1616
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const prompt = $json.prompt;\n\nconst requestBody = {\n  model: 'openai/gpt-oss-20b',\n  messages: [\n    {\n      role: 'system',\n      content: 'MSSP CTI Analyst. Output clean Markdown only. Complete ALL 8 sections — never truncate. Short bullets, finish everything.'\n    },\n    {\n      role: 'user',\n      content: prompt\n    }\n  ],\n  temperature: 0.2,\n  max_tokens: 4000\n};\n\nreturn { bodyString: JSON.stringify(requestBody) };"
+      },
+      "id": "node-prepare-groq-request3",
+      "name": "Prepare Groq Request3",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3360,
+        1616
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.groq.com/openai/v1/chat/completions",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "groqApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ $json.bodyString }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "node-groq-ai-analyzer6",
+      "name": "Groq AI Analyzer6",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        3584,
+        1616
+      ],
+      "credentials": {
+        "groqApi": {
+          "id": "REDACTED_GROQ_CRED_ID",
+          "name": "Groq API Credential"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const aiResponse = $input.first().json;\nconst slackData     = $node['Slack Trigger4'].json;\nconst extractedData = $node['Extract URL & Metadata4'].json;\nconst articleData   = $node['Fetch & Extract Content3'].json;\nconst promptData    = $node['Build AI Prompt4'].json;\n\nconst raw = aiResponse?.choices?.[0]?.message?.content || '';\nconst advisory_id = promptData.advisory_id || 'TADV-UNKNOWN';\nconst today_date  = promptData.today_date  || '';\nconst source_url  = extractedData.url || '#';\n\n// ── Extract metadata from markdown ───────────────────────────────────\nfunction extractMeta(text, key) {\n  const m = text.match(new RegExp(`\\\\*\\\\*${key}[:\\\\*]*\\\\*\\\\*[:\\\\s]+([^\\\\n]+)`,'i'));\n  return m ? m[1].trim() : 'N/A';\n}\n\n// ── Smart CVE extraction ─────────────────────────────────────────────\nfunction extractCVEs(text) {\n  for (const key of ['CVE\\\\(s\\\\)', 'CVEs', 'CVE']) {\n    const val = extractMeta(text, key);\n    if (val !== 'N/A' && /CVE-\\d{4}-\\d+/i.test(val)) return val.replace(/\\[\\d+\\]/g,'').trim();\n  }\n  const found = [...text.matchAll(/CVE-\\d{4}-\\d{4,7}/gi)].map(m => m[0].toUpperCase());\n  if (found.length === 0) return 'N/A';\n  return [...new Set(found)].join(', ');\n}\n\n// ── Smart CVSS extraction ────────────────────────────────────────────\nfunction extractCVSS(text) {\n  const fromMeta = extractMeta(text, 'CVSS Score');\n  if (fromMeta !== 'N/A' && /\\d+\\.?\\d*/.test(fromMeta)) return fromMeta.replace(/\\[\\d+\\]/g,'').trim();\n  const bodyMatch = text.match(/CVSS(?:\\s*v\\d)?(?:\\s*(?:Base\\s*)?Score)?[:\\s]+(\\d+\\.?\\d*)/i);\n  if (bodyMatch) return bodyMatch[1];\n  const looseMatch = text.match(/(?:score|rating)\\s+(?:of\\s+)?(\\d+\\.\\d)/i);\n  return looseMatch ? looseMatch[1] : 'N/A';\n}\n\n// ── Smart Severity extraction ────────────────────────────────────────\nfunction extractSeverity(text) {\n  const SEV_RE = /\\b(critical|high|medium|moderate|low)\\b/i;\n  const fromMeta = extractMeta(text, 'Severity Level');\n  if (fromMeta !== 'N/A') {\n    const m = fromMeta.match(SEV_RE);\n    if (m) return m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase();\n  }\n  const patterns = [\n    /severity[:\\s]+([a-z]+)/i,\n    /rated\\s+(critical|high|medium|moderate|low)/i,\n    /(critical|high|medium|moderate|low)\\s+severity/i,\n    /severity\\s+(?:level\\s+)?(?:is\\s+)?(critical|high|medium|moderate|low)/i,\n  ];\n  for (const pat of patterns) {\n    const m = text.match(pat);\n    if (m) {\n      const word = (m[1] || m[2] || '').toLowerCase();\n      if (SEV_RE.test(word)) return word.charAt(0).toUpperCase() + word.slice(1);\n    }\n  }\n  const cvss = parseFloat(extractCVSS(text));\n  if (!isNaN(cvss)) {\n    if (cvss >= 9.0) return 'Critical';\n    if (cvss >= 7.0) return 'High';\n    if (cvss >= 4.0) return 'Medium';\n    if (cvss > 0)    return 'Low';\n  }\n  return 'N/A';\n}\n\nconst severity   = extractSeverity(raw);\nconst cvss_score = extractCVSS(raw);\nconst cves       = extractCVEs(raw);\nconst titleMatch = raw.match(/# Threat Advisory[:\\s]+([^\\n]+)/i);\nconst title      = titleMatch ? titleMatch[1].trim() : (articleData.title || 'Threat Advisory');\n\n// ── Convert Markdown to safe HTML ────────────────────────────────────\nfunction mdToHtml(md) {\n  if (!md) return '';\n  return md\n    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')\n    .replace(/`([^`]+)`/g, '<code>$1</code>')\n    .replace(/\\[([^\\]]+)\\]\\(([^)]+)\\)/g, '<a href=\"$2\" style=\"color:#1a6bb5;\">$1</a>')\n    .replace(/\\*\\*([^*]+)\\*\\*/g, '<strong>$1</strong>')\n    .replace(/\\*([^*]+)\\*/g, '<em>$1</em>')\n    .replace(/^## (.+)$/gm, '<h3 class=\"section-label\">$1</h3>')\n    .replace(/^### (.+)$/gm, '<div class=\"sub-heading\">$1</div>')\n    .replace(/^[-*] (.+)$/gm, '<li>$1</li>')\n    .replace(/^\\d+\\. (.+)$/gm, '<li>$1</li>')\n    .replace(/((?:<li>[^<]*<\\/li>\\n?)+)/g, '<ul>$1</ul>')\n    .replace(/^---+$/gm, '<hr style=\"border:none;border-top:1.5px solid #d0d8e4;margin:16px 0;\">')\n    .replace(/\\n\\n+/g, '</p><p>')\n    .replace(/\\n/g, '<br>')\n    .replace(/^(?!<[hup]|<div|<table|<hr)/, '<p>')\n    + '</p>';\n}\n\n// ── Extract section content from markdown ────────────────────────────\nfunction extractSection(text, sectionNum, sectionName) {\n  const escapedName = sectionName.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');\n  const regex = new RegExp(\n    `##\\\\s+${sectionNum}\\\\.\\\\s+${escapedName}([\\\\s\\\\S]*?)(?=\\\\n##\\\\s+\\\\d+\\\\.|$)`, 'i'\n  );\n  const m = text.match(regex);\n  return m ? m[1].trim() : '';\n}\n\n// ── Parse Threat Overview table ──────────────────────────────────────\nfunction parseThreatOverview(text) {\n  if (!text) return '';\n  const cleaned = text.replace(/\\[\\d+\\]/g, '').trim();\n\n  // ── Try markdown table format first ─────────────────────────────\n  const tableRowRE = /^\\|(.+)\\|$/gm;\n  const allRows = [];\n  let m;\n  while ((m = tableRowRE.exec(cleaned)) !== null) {\n    const cells = m[1].split('|').map(c => c.trim());\n    if (cells.every(c => /^[-:=\\s]+$/.test(c))) continue;\n    if (cells.every(c => c === '')) continue;\n    if (cells[0].toLowerCase().includes('field') && cells[1].toLowerCase().includes('detail')) continue;\n    allRows.push(cells);\n  }\n\n  if (allRows.length > 0) {\n    const BAD_VALUE = /^(unknown|n\\/a|not specified|not available|none|unspecified|\\[.*?\\])$/i;\n    const rows = allRows\n      .filter(cells => cells.length >= 2)\n      .filter(cells => !BAD_VALUE.test(cells[1]))\n      .map(cells => `\n      <tr>\n        <td><strong>${cells[0].replace(/\\*\\*/g,'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</strong></td>\n        <td>${cells[1].replace(/\\*\\*/g,'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</td>\n      </tr>`).join('');\n\n    if (rows) {\n      return `\n      <table class=\"data-table\">\n        <thead><tr><th>Field</th><th>Details</th></tr></thead>\n        <tbody>${rows}</tbody>\n      </table>\n      <p class=\"source-note\">Source: <a href=\"${source_url}\" style=\"color:#1a6bb5;\">${source_url}</a></p>`;\n    }\n  }\n\n  // ── Fallback: old bullet format ──────────────────────────────────\n  const BAD_VALUE = /^(unknown|n\\/a|not specified|not available|none|unspecified|\\[.*?\\])$/i;\n\n  function extract(label) {\n    const m = cleaned.match(new RegExp(`[-*]?\\\\s*\\\\*{0,2}${label}\\\\*{0,2}\\\\s*:\\\\s*([^\\\\n]+)`,'i'));\n    if (!m) return 'N/A';\n    const val = m[1].replace(/\\*\\*/g,'').replace(/\\[\\d+\\]/g,'').trim();\n    return BAD_VALUE.test(val) ? 'N/A' : val;\n  }\n\n  const rows = [\n    ['Threat Name/Identifier', extract('Threat Name(?:\\\\/Identifier)?')],\n    ['Threat Type',            extract('Threat Type')],\n    ['Threat Actor(s)',        extract('Threat Actors?(?:\\\\(s\\\\))?')],\n    ['Motivation',             extract('Motivation')],\n    ['Initial Discovery Date', extract('Initial Discovery Date')],\n    ['Exploitation Status',    extract('Exploitation Status')],\n  ].filter(([, value]) => value !== 'N/A' && value.trim() !== '');\n\n  if (rows.length === 0) return `<div class=\"section-content\">${mdToHtml(text)}</div>`;\n\n  return `\n  <table class=\"data-table\">\n    <thead><tr><th>Field</th><th>Details</th></tr></thead>\n    <tbody>\n      ${rows.map(([field, value]) => `\n      <tr>\n        <td><strong>${field.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</strong></td>\n        <td>${value.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</td>\n      </tr>`).join('')}\n    </tbody>\n  </table>\n  <p class=\"source-note\">Source: <a href=\"${source_url}\" style=\"color:#1a6bb5;\">${source_url}</a></p>`;\n}\n\n// ── Parse Technical Details bullet list ─────────────────────────────\nfunction parseTechnicalDetails(text) {\n  const cleaned = text.replace(/\\[\\d+\\]/g, '').trim();\n  const bulletStart = cleaned.search(/^[-*]\\s+\\*\\*/m);\n  const bulletsOnly = bulletStart > 0 ? cleaned.slice(bulletStart) : cleaned;\n  const lines = bulletsOnly.split('\\n').filter(l => l.trim());\n  if (lines.length === 0) return `<div class=\"section-content\">${mdToHtml(text)}</div>`;\n\n  function renderValue(raw) {\n    const parts = [];\n    let last = 0;\n    const codeRE = /`([^`]+)`/g;\n    let cm;\n    while ((cm = codeRE.exec(raw)) !== null) {\n      if (cm.index > last) parts.push(raw.slice(last, cm.index).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'));\n      parts.push(`<code>${cm[1].replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</code>`);\n      last = cm.index + cm[0].length;\n    }\n    if (last < raw.length) parts.push(raw.slice(last).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'));\n    return parts.join('');\n  }\n\n  const items = [];\n  let i = 0;\n  while (i < lines.length) {\n    const line = lines[i];\n    const m = line.match(/^[-*]\\s+\\*\\*([^*]+)\\*\\*[:\\s]*(.*)/);\n    if (m) {\n      const label = m[1].replace(/:$/, '').trim();\n      const value = m[2].replace(/\\[\\d+\\]/g, '').trim();\n      const subSteps = [];\n      while (i + 1 < lines.length && /^\\s+\\d+\\./.test(lines[i + 1])) {\n        i++;\n        const step = lines[i].replace(/^\\s+\\d+\\.\\s*/, '').replace(/\\[\\d+\\]/g, '').trim();\n        subSteps.push(`<li>${renderValue(step)}</li>`);\n      }\n      if (subSteps.length > 0) {\n        items.push(`<li><strong>${label.replace(/</g,'&lt;').replace(/>/g,'&gt;')}:</strong><ol class=\"chain-list\">${subSteps.join('')}</ol></li>`);\n      } else {\n        const valueHtml = value ? ` ${renderValue(value)}` : '';\n        items.push(`<li><strong>${label.replace(/</g,'&lt;').replace(/>/g,'&gt;')}:</strong>${valueHtml}</li>`);\n      }\n      i++;\n      continue;\n    }\n    const plain = line.replace(/^[-*]\\s+/, '').replace(/\\[\\d+\\]/g, '').trim();\n    if (plain) items.push(`<li>${renderValue(plain)}</li>`);\n    i++;\n  }\n\n  return `<ul class=\"tech-list\">${items.join('\\n')}</ul>`;\n}\n\n// ── Parse Affected Systems table + Enterprise Exposure ───────────────\nfunction parseAffectedSystems(text) {\n  if (!text) return `<div class=\"section-content\">${mdToHtml(text)}</div>`;\n  const cleaned = text.replace(/\\[\\d+\\]/g, '').trim();\n\n  const tableRowRE = /^\\|(.+)\\|$/gm;\n  const allRows = [];\n  let m;\n  while ((m = tableRowRE.exec(cleaned)) !== null) {\n    const cells = m[1].split('|').map(c => c.trim());\n    if (cells.every(c => /^[-:=\\s]+$/.test(c))) continue;\n    if (cells.every(c => c === '')) continue;\n    allRows.push(cells);\n  }\n\n  let tableHtml = '';\n  if (allRows.length > 0) {\n    const [header, ...bodyRows] = allRows;\n    const colCount = header.length;\n    const thCells = header.map(h =>\n      `<th>${h.replace(/\\*\\*/g,'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</th>`\n    ).join('');\n    const tdRows = bodyRows.map(row => {\n      const normalized = [...row];\n      while (normalized.length < colCount) normalized.push('—');\n      const cells = normalized.slice(0, colCount).map(c =>\n        `<td>${c.replace(/\\*\\*/g,'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</td>`\n      ).join('');\n      return `<tr>${cells}</tr>`;\n    }).join('\\n');\n    tableHtml = `\n<table class=\"data-table\">\n  <thead><tr>${thCells}</tr></thead>\n  <tbody>${tdRows}</tbody>\n</table>`;\n  }\n\n  const expMatch = cleaned.match(/\\*\\*Enterprise Exposure[:\\*]*\\*\\*[:\\s]*([\\s\\S]*?)(?=\\n\\n|\\n##|$)/i);\n  const exposureHtml = expMatch\n    ? `<p><strong>Enterprise Exposure:</strong> ${expMatch[1].replace(/\\[\\d+\\]/g,'').replace(/\\*\\*/g,'').replace(/</g,'&lt;').replace(/>/g,'&gt;').trim()}</p>`\n    : '';\n\n  if (!tableHtml && !exposureHtml) return `<div class=\"section-content\">${mdToHtml(text)}</div>`;\n  return tableHtml + exposureHtml;\n}\n\n// ── Parse Recommendations ────────────────────────────────────────────\nfunction parseRecommendations(text) {\n  if (!text) return `<div class=\"section-content\">${mdToHtml(text)}</div>`;\n  const cleaned = text.replace(/\\[\\d+\\]/g, '').trim();\n\n  const HEADING_RE = /\\*\\*(Immediate Actions[^*]*|Medium-Term Actions[^*]*|Long-Term Actions[^*]*)\\*\\*/gi;\n  const parts = [];\n  let match;\n  while ((match = HEADING_RE.exec(cleaned)) !== null) {\n    parts.push({ heading: match[1].trim(), start: match.index + match[0].length });\n  }\n\n  const sections = [];\n  for (let i = 0; i < parts.length; i++) {\n    const bodyStart = parts[i].start;\n    const bodyEnd   = i + 1 < parts.length ? parts[i+1].start - parts[i+1].heading.length - 4 : cleaned.length;\n    sections.push({ heading: parts[i].heading, body: cleaned.slice(bodyStart, bodyEnd).trim() });\n  }\n\n  if (sections.length === 0) return `<div class=\"section-content\">${mdToHtml(text)}</div>`;\n\n  return sections.map(({ heading, body }) => {\n    const lines = body.split('\\n').filter(l => l.trim());\n    const items = lines.map(line => {\n      const numbered = line.match(/^\\d+\\.\\s+\\*\\*([^*]+)\\*\\*[:\\s]*(.*)/);\n      if (numbered) {\n        const label = numbered[1].replace(/:$/, '').trim();\n        const value = numbered[2].replace(/\\[\\d+\\]/g,'').trim();\n        return `<li><strong>${label.replace(/</g,'&lt;').replace(/>/g,'&gt;')}:</strong> ${value.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</li>`;\n      }\n      const plain = line.match(/^\\d+\\.\\s+(.*)/);\n      if (plain) return `<li>${plain[1].replace(/\\[\\d+\\]/g,'').replace(/</g,'&lt;').replace(/>/g,'&gt;').trim()}</li>`;\n      const bullet = line.match(/^[-*]\\s+(.*)/);\n      if (bullet) return `<li>${bullet[1].replace(/\\[\\d+\\]/g,'').replace(/</g,'&lt;').replace(/>/g,'&gt;').trim()}</li>`;\n      return '';\n    }).filter(Boolean).join('\\n');\n\n    return `\n<div class=\"sub-heading\">${heading.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>\n<ol>${items}</ol>`;\n  }).join('');\n}\n\n// ── Parse MSSP Detection & Response ─────────────────────────────────\nfunction parseMSSPSection(text) {\n  if (!text) return `<div class=\"section-content\">${mdToHtml(text)}</div>`;\n  const cleaned = text.replace(/\\[\\d+\\]/g, '').trim();\n\n  const HEADING_RE = /^(?:[-*]\\s*)?\\*\\*(Detection Coverage|Automated Response|Manual Actions|Client-Specific Notes):?\\*\\*:?/gim;\n  const parts = [];\n  let match;\n  while ((match = HEADING_RE.exec(cleaned)) !== null) {\n    parts.push({ heading: match[1].trim(), index: match.index, end: match.index + match[0].length });\n  }\n\n  if (parts.length === 0) return `<div class=\"section-content\">${mdToHtml(text)}</div>`;\n\n  const sections = parts.map((part, i) => {\n    const bodyStart = part.end;\n    const bodyEnd   = i + 1 < parts.length ? parts[i+1].index : cleaned.length;\n    return { heading: part.heading, body: cleaned.slice(bodyStart, bodyEnd).trim() };\n  });\n\n  function renderValue(raw) {\n    const parts = [];\n    let last = 0;\n    const codeRE = /`([^`]+)`/g;\n    let cm;\n    while ((cm = codeRE.exec(raw)) !== null) {\n      if (cm.index > last) {\n        parts.push(raw.slice(last, cm.index).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'));\n      }\n      parts.push(`<code>${cm[1].replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</code>`);\n      last = cm.index + cm[0].length;\n    }\n    if (last < raw.length) {\n      parts.push(raw.slice(last).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'));\n    }\n    return parts.join('');\n  }\n\n  return sections.map(({ heading, body }) => {\n    const lines = body.split('\\n').filter(l => l.trim());\n    const items = lines.map(line => {\n      const toolMatch = line.match(/^[-*]\\s+\\*\\*([^*]+)\\*\\*[:\\s]*(.*)/);\n      if (toolMatch) {\n        const tool  = toolMatch[1].replace(/:$/, '').trim();\n        const value = renderValue(toolMatch[2].replace(/\\[\\d+\\]/g,'').trim());\n        return `<li><strong>${tool.replace(/</g,'&lt;').replace(/>/g,'&gt;')}:</strong> ${value}</li>`;\n      }\n      const plain = line.match(/^[-*]\\s+(.*)/);\n      if (plain) {\n        return `<li>${renderValue(plain[1].replace(/\\[\\d+\\]/g,'').trim())}</li>`;\n      }\n      return '';\n    }).filter(Boolean).join('\\n');\n\n    return `\n<div class=\"sub-heading\">${heading.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>\n${items ? `<ul>${items}</ul>` : ''}`;\n  }).join('');\n}\n\n// ── Parse IOC table ──────────────────────────────────────────────────\nfunction parseIOCSection(text) {\n  if (!text) return '';\n  const cleaned = text.replace(/\\[\\d+\\]/g, '').trim();\n\n  const tableRowRE = /^\\|(.+)\\|$/gm;\n  const allRows = [];\n  let m;\n  while ((m = tableRowRE.exec(cleaned)) !== null) {\n    const cells = m[1].split('|').map(c => c.trim());\n    if (cells.every(c => /^[-:=\\s]+$/.test(c))) continue;\n    if (cells.every(c => c === '')) continue;\n    allRows.push(cells);\n  }\n\n  if (allRows.length === 0) return '';\n\n  const [header, ...bodyRows] = allRows;\n  const colCount = header.length;\n  const thCells = header.map(h =>\n    `<th>${h.replace(/\\*\\*/g,'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</th>`\n  ).join('');\n  const tdRows = bodyRows.map(row => {\n    const normalized = [...row];\n    while (normalized.length < colCount) normalized.push('—');\n    const cells = normalized.slice(0, colCount).map((c, i) => {\n      const val = c.replace(/\\*\\*/g,'').replace(/</g,'&lt;').replace(/>/g,'&gt;');\n      return i > 0 && i < colCount - 1\n        ? `<td style=\"font-family:'Courier New',monospace;font-size:9.5pt;\">${val}</td>`\n        : `<td>${val}</td>`;\n    }).join('');\n    return `<tr>${cells}</tr>`;\n  }).join('\\n');\n\n  return `\n<table class=\"ioc-table\">\n  <thead><tr>${thCells}</tr></thead>\n  <tbody>${tdRows}</tbody>\n</table>\n<div class=\"note-box\">\n  <strong>Note:</strong> IP addresses and domains are intentionally defanged to prevent accidental resolution or hyperlinking. Re-fang only within controlled threat intelligence platforms such as MISP, VirusTotal, or your SIEM.\n</div>`;\n}\n\n// ── Parse References ─────────────────────────────────────────────────\nfunction parseReferences(text) {\n  if (!text) return '';\n  const cleaned = text.replace(/^\\s*\\d+\\.\\s+/gm,'').replace(/^\\s*\\[\\d+\\]\\s*/gm,'').trim();\n  const lines = cleaned.split('\\n').filter(l => l.trim());\n  const items = lines.map(line => {\n    // markdown link format: [Name](url)\n    const m = line.match(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^)]+)\\)/);\n    if (m) return `<li><a href=\"${m[2].trim()}\">${m[1].trim().replace(/</g,'&lt;').replace(/>/g,'&gt;')}</a></li>`;\n    // bare URL\n    const urlOnly = line.match(/(https?:\\/\\/\\S+)/);\n    if (urlOnly) {\n      const url = urlOnly[1].replace(/[.,)]+$/,'');\n      return `<li><a href=\"${url}\">${url.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</a></li>`;\n    }\n    // plain text with no URL — skip karo, yeh AI ka incomplete output hai\n    return '';\n  }).filter(Boolean).join('\\n');\n  if (!items) return `<div class=\"section-content\">${mdToHtml(text)}</div>`;\n  return `<ul class=\"ref-list\">${items}</ul>`;\n}\n\nconst sec1 = extractSection(raw, '1', 'Executive Summary');\nconst sec2 = extractSection(raw, '2', 'Threat Overview');\nconst sec3 = extractSection(raw, '3', 'Technical Details');\nconst sec4 = extractSection(raw, '4', 'Affected Systems / Impact');\nconst sec5 = extractSection(raw, '5', 'Recommendations');\nconst sec6 = extractSection(raw, '6', 'MSSP Detection & Response');\nconst sec7 = extractSection(raw, '7', 'Indicators of Compromise') ||\n             extractSection(raw, '7', 'IOC') || '';\nconst sec8 = extractSection(raw, '8', 'References & Resources') ||\n             extractSection(raw, '7', 'References & Resources');\n\n// ── YourOrg Logo ───────────────────────────────────────────────────────\nconst LOGO_B64 = 'REPLACE_WITH_YOUR_BASE64_PNG_LOGO';\n\nconst LOGO_HTML = `<div class=\"logo\"><img src=\"data:image/png;base64,${LOGO_B64}\" alt=\"yourorg\" style=\"height:38px;width:auto;display:block;\"/></div>`;\n\n// ── CSS ──────────────────────────────────────────────────────────────\nconst CSS = `\n  * { margin:0; padding:0; box-sizing:border-box; }\n  body { font-family:'Segoe UI',Calibri,Arial,sans-serif; font-size:11pt; color:#222; background:#f0f0f0; }\n  .page { width:210mm; min-height:297mm; background:#fff; margin:20px auto; padding:18mm 18mm 20mm 18mm; box-shadow:0 2px 20px rgba(0,0,0,0.15); position:relative; }\n  .header { display:flex; justify-content:flex-end; margin-bottom:30px; }\n  .logo { display:flex; align-items:center; }\n  .cover-title { text-align:center; margin:40px 0 10px; }\n  .cover-title h1 { font-size:28pt; font-weight:700; color:#1a1a1a; letter-spacing:-0.3px; margin-bottom:18px; }\n  .cover-title h2 { font-size:14pt; font-weight:400; color:#333; line-height:1.5; }\n  .cover-divider { height:3px; background:#1a6bb5; margin:30px 0; }\n  .section-label { font-size:12pt; font-weight:700; color:#1a6bb5; margin-bottom:10px; margin-top:26px; padding-bottom:6px; border-bottom:1.5px solid #d0d8e4; }\n  .sub-heading { font-size:10.5pt; font-weight:700; color:#1a1a1a; margin:14px 0 5px; }\n  .meta-table { width:100%; border-collapse:collapse; margin-bottom:10px; }\n  .meta-table tr { border-bottom:1px solid #e0e4ea; }\n  .meta-table tr:first-child td { background:#1a6bb5; color:#fff; font-weight:700; font-size:10.5pt; }\n  .meta-table td { padding:8px 12px; font-size:10.5pt; }\n  .meta-table tr:not(:first-child) td:first-child { font-weight:700; background:#f4f6fa; width:38%; }\n  .meta-table tr:nth-child(even):not(:first-child) td { background:#fff; }\n  .data-table { width:100%; border-collapse:collapse; margin:10px 0 16px; font-size:10.5pt; }\n  .data-table thead tr { background:#1a6bb5; color:#fff; }\n  .data-table thead th { padding:8px 12px; text-align:left; font-weight:700; }\n  .data-table tbody tr { border-bottom:1px solid #e0e4ea; }\n  .data-table tbody tr:nth-child(even) { background:#f7f9fb; }\n  .data-table tbody td { padding:7px 12px; }\n  .data-table tbody td:first-child { font-weight:600; }\n  .ioc-table { width:100%; border-collapse:collapse; font-size:9.5pt; margin:8px 0 14px; }\n  .ioc-table thead tr { background:#1a6bb5; color:#fff; }\n  .ioc-table thead th { padding:7px 10px; text-align:left; }\n  .ioc-table tbody tr { border-bottom:1px solid #e0e4ea; }\n  .ioc-table tbody tr:nth-child(even) { background:#f7f9fb; }\n  .ioc-table tbody td { padding:6px 10px; font-family:'Courier New',monospace; }\n  .ioc-table tbody td:first-child, .ioc-table tbody td:last-child { font-family:'Segoe UI',sans-serif; }\n  .tech-list { list-style:none; margin:6px 0 10px 0; padding:0; font-size:10.5pt; }\n  .tech-list li { padding:6px 0 6px 14px; border-bottom:1px solid #f0f0f0; line-height:1.6; position:relative; }\n  .tech-list li::before { content:\"•\"; position:absolute; left:0; color:#1a6bb5; font-weight:700; }\n  .chain-list { list-style:decimal; margin:6px 0 4px 18px; padding:0; font-size:10.5pt; }\n  .chain-list li { padding:3px 0; line-height:1.6; border-bottom:none; margin-bottom:3px; }\n  .chain-list li::before { content:none; }\n  p { line-height:1.65; margin-bottom:10px; font-size:10.5pt; text-align:justify; }\n  ul { margin:6px 0 10px 18px; line-height:1.7; font-size:10.5pt; }\n  ul li { margin-bottom:4px; }\n  ol { margin:6px 0 10px 20px; font-size:10.5pt; line-height:1.7; }\n  ol li { margin-bottom:5px; }\n  strong { font-weight:700; }\n  code { font-family:'Courier New',monospace; background:#f4f6fa; padding:1px 4px; border-radius:3px; font-size:9.5pt; }\n  a { color:#1a6bb5; text-decoration:none; }\n  a:hover { text-decoration:underline; }\n  .severity-badge { display:inline-block; color:#fff; font-weight:700; font-size:9pt; padding:3px 12px; border-radius:3px; letter-spacing:0.5px; margin-left:10px; vertical-align:middle; text-transform:uppercase; background:#c0392b; }\n  .severity-badge.high    { background:#e67e22; }\n  .severity-badge.medium  { background:#f1c40f; color:#333; }\n  .severity-badge.low     { background:#27ae60; }\n  .severity-badge.critical{ background:#c0392b; }\n  .source-note { font-size:9.5pt; color:#555; margin-top:4px; margin-bottom:14px; }\n  .ref-list { list-style:disc; margin-left:18px; font-size:10.5pt; line-height:1.8; }\n  .ref-list a { color:#1a6bb5; text-decoration:none; }\n  .ref-list a:hover { text-decoration:underline; }\n  .confidential-footer { position:absolute; bottom:20mm; left:18mm; right:18mm; padding-top:8px; border-top:1px solid #e0e0e0; font-size:8pt; color:#c0392b; line-height:1.6; }\n  .page-footer { position:absolute; bottom:10mm; left:18mm; right:18mm; display:flex; justify-content:space-between; font-size:8.5pt; color:#888; border-top:1px solid #ddd; padding-top:5px; }\n  .note-box { background:#fef9ec; border-left:4px solid #e67e22; padding:8px 12px; font-size:10pt; margin:10px 0; border-radius:0 4px 4px 0; }\n  @media print { body { background:#fff; } .page { box-shadow:none; margin:0; } }`;\n\n// ── IOC check — NO_IOC_FOUND token detect karo ───────────────────────\nconst hasIOC = sec7.trim().length > 0 && !sec7.includes('NO_IOC_FOUND');\n\n// ── Section numbering — IOC hai ya nahi uske hisaab se ───────────────\nconst refsNum    = hasIOC ? '8' : '7';\nconst totalPages = 4;\n\n// ── Build HTML ───────────────────────────────────────────────────────\nconst FULL_HTML = `<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"UTF-8\"/>\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"/>\n<title>Threat Advisory — ${advisory_id}</title>\n<style>${CSS}</style>\n</head>\n<body>\n\n<!-- PAGE 1: COVER -->\n<div class=\"page\">\n  <div class=\"header\">${LOGO_HTML}</div>\n  <div class=\"cover-title\">\n    <h1>Threat Advisory</h1>\n    <h2>${title.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</h2>\n  </div>\n  <div class=\"cover-divider\"></div>\n  <div class=\"section-label\">Metadata</div>\n  <table class=\"meta-table\">\n    <tr><td>Advisory ID</td><td><strong>${advisory_id}</strong></td></tr>\n    <tr><td>Date Issued</td><td>${today_date}</td></tr>\n    <tr><td>Severity Level</td><td>${severity}</td></tr>\n    <tr><td>CVSS Score</td><td>${cvss_score}</td></tr>\n    <tr><td>CVE(s)</td><td>${cves}</td></tr>\n    <tr><td>Version</td><td>1.0</td></tr>\n  </table>\n  <div class=\"confidential-footer\">\n    CONFIDENTIAL: The contents of this document are privileged and are intended solely for the addressee.\n    This transmission is sent in trust, for the sole purpose of delivery to the intended recipient.<br>\n    Do not distribute, email, fax, or transfer via any mechanism without prior approval.\n    Do not share any information contained within this report with third parties unless it is cited from public sources.\n  </div>\n  <div class=\"page-footer\"><span>Threat Advisory — Confidential</span><span>Page 1 of ${totalPages}</span></div>\n</div>\n\n<!-- PAGE 2 -->\n<div class=\"page\">\n  <div class=\"header\">${LOGO_HTML}</div>\n  <div class=\"section-label\">1. Executive Summary</div>\n  <div class=\"section-content\">${mdToHtml(sec1)}</div>\n  <div class=\"section-label\">2. Threat Overview</div>\n  ${parseThreatOverview(sec2)}\n  <div class=\"section-label\">3. Technical Details</div>\n  ${parseTechnicalDetails(sec3)}\n  <div class=\"page-footer\"><span>Threat Advisory — Confidential</span><span>Page 2 of ${totalPages}</span></div>\n</div>\n\n<!-- PAGE 3 -->\n<div class=\"page\">\n  <div class=\"header\">${LOGO_HTML}</div>\n  <div class=\"section-label\">4. Affected Systems / Impact</div>\n  ${parseAffectedSystems(sec4)}\n  <div class=\"section-label\">5. Recommendations</div>\n  ${parseRecommendations(sec5)}\n  <div class=\"page-footer\"><span>Threat Advisory — Confidential</span><span>Page 3 of ${totalPages}</span></div>\n</div>\n\n<!-- PAGE 4 -->\n<div class=\"page\">\n  <div class=\"header\">${LOGO_HTML}</div>\n  <div class=\"section-label\">6. MSSP Detection &amp; Response</div>\n  ${parseMSSPSection(sec6)}\n  ${hasIOC ? `\n  <div class=\"section-label\">7. Indicators of Compromise (IOCs)</div>\n  ${parseIOCSection(sec7)}\n  <div class=\"section-label\">8. References &amp; Resources</div>\n  ${parseReferences(sec8)}` : `\n  <div class=\"section-label\">7. References &amp; Resources</div>\n  ${parseReferences(sec8)}`}\n  <div class=\"page-footer\"><span>Threat Advisory — Confidential</span><span>Page 4 of ${totalPages}</span></div>\n</div>\n\n</body>\n</html>`;\n\nreturn {\n  channel:     slackData.channel,\n  thread_ts:   extractedData.thread_ts,\n  advisory_id,\n  severity,\n  cvss_score,\n  cves,\n  title,\n  filename: `${advisory_id}_${title.substring(0,40).replace(/[^a-zA-Z0-9]/g,'_')}.html`,\n  FULL_HTML\n};"
+      },
+      "id": "node-format-html-advisory6",
+      "name": "Format HTML Advisory6",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3808,
+        1616
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const htmlContent = $json.FULL_HTML;\nconst filename    = $json.filename;\nconst channel     = $json.channel;\nconst thread_ts   = $json.thread_ts;\nconst advisory_id = $json.advisory_id;\nconst severity    = $json.severity;\nconst cvss_score  = $json.cvss_score;\nconst cves        = $json.cves;\nconst title       = $json.title;\n\nconst base64Data = Buffer.from(htmlContent, 'utf-8').toString('base64');\n\nreturn {\n  binary: {\n    data: {\n      data: base64Data,\n      fileName: filename,\n      mimeType: 'text/html',\n      fileExtension: 'html'\n    }\n  },\n  json: { channel, thread_ts, advisory_id, severity, cvss_score, cves, title, filename }\n};"
+      },
+      "id": "node-convert-to-binary6",
+      "name": "Convert to Binary6",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4032,
+        1616
+      ]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "options": {
+          "channelId": "YOUR_SLACK_CHANNEL_ID",
+          "fileName": "={{ $json.filename }}",
+          "threadTs": "={{ $('Slack Trigger4').item.json.ts }}"
+        }
+      },
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.4,
+      "position": [
+        4480,
+        1616
+      ],
+      "id": "node-upload-advisory-to-slack5",
+      "name": "Upload Advisory to Slack5",
+      "webhookId": "REDACTED_WEBHOOK_ID",
+      "credentials": {
+        "slackApi": {
+          "id": "REDACTED_SLACK_CRED_ID",
+          "name": "Slack API Credential"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────────────────────────────\n// NODE: Build Email Subject & Body\n// Node Type: Code node\n// Place AFTER: Convert HTML to DOCX node (runs in parallel with Logbook node)\n//\n// Connect output to: Gmail node (Send Email)\n// ─────────────────────────────────────────────────────────────────────────────\n\nconst input       = $input.first().json;\nconst advisory_id = input.advisory_id  || 'TADV-UNKNOWN';\nconst title       = input.title        || 'Threat Advisory';\nconst severity    = input.severity     || 'N/A';\nconst cvss_score  = input.cvss_score   || 'N/A';\nconst cves        = input.cves         || 'N/A';\nconst today_date  = input.today_date   || new Date().toLocaleDateString('en-GB');\nconst source_url  = input.source_url   || '#';\nconst filename    = input.filename     || `${advisory_id}.docx`;\n\n// ── Severity color for email badge ───────────────────────────────────\nfunction severityColor(s) {\n  const sl = String(s).toLowerCase();\n  if (sl.includes('critical')) return '#c0392b';\n  if (sl.includes('high'))     return '#e67e22';\n  if (sl.includes('medium'))   return '#f39c12';\n  return '#27ae60';\n}\n\nconst badgeColor = severityColor(severity);\n\n// ── Email Subject ─────────────────────────────────────────────────────\nconst subject = `YourOrg | ${severity} Threat Advisory - ${advisory_id} - ${title}`;\n\n// ── Extract summary + impacts + actions from AI raw output ──────────\nconst rawAI = $input.first().json?.FULL_HTML || '';\n\n// Pull Executive Summary from formatted HTML (first <p> tags after sec1)\n// We extract from the node data instead\nconst execSummary  = input.exec_summary  || '';\nconst impacts      = input.impacts       || '';\nconst actions      = input.actions       || '';\n\n// ── Helper: extract section from raw markdown via Format HTML node ───\n// We re-read from Groq output passed through\nconst groqRaw = (() => {\n  try { return $node['Groq AI Analyzer6'].json?.choices?.[0]?.message?.content || ''; }\n  catch(e) { return ''; }\n})();\n\nfunction extractSection(text, num, name) {\n  const escaped = name.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');\n  const re = new RegExp(`##\\\\s+${num}\\\\.\\\\s+${escaped}([\\\\s\\\\S]*?)(?=\\\\n##\\\\s+\\\\d+\\\\.|$)`, 'i');\n  const m = text.match(re);\n  return m ? m[1].trim() : '';\n}\n\nfunction stripCitations(t) {\n  return t.replace(/\\[\\d+\\]/g, '').replace(/\\*\\*/g, '').trim();\n}\n\n// Executive Summary — first 3 sentences only for email brevity\nconst sec1Raw = stripCitations(extractSection(groqRaw, '1', 'Executive Summary'));\nconst summaryShort = sec1Raw.split(/(?<=[.!?])\\s+/).slice(0, 3).join(' ');\n\n// Affected Systems — extract impact bullet lines\nconst sec4Raw = stripCitations(extractSection(groqRaw, '4', 'Affected Systems / Impact'));\nconst impactMatch = sec4Raw.match(/Enterprise Exposure[:\\s*]+(.*?)(?=\\n\\n|$)/is);\nconst exposureLine = impactMatch ? impactMatch[1].replace(/\\n/g,' ').trim() : '';\n\n// Recommendations — Immediate Actions only\nconst sec5Raw = stripCitations(extractSection(groqRaw, '5', 'Recommendations'));\nconst immediateMatch = sec5Raw.match(/Immediate Actions[^*\\n]*\\n([\\s\\S]*?)(?=\\*\\*Medium|$)/i);\nconst immediateLines = immediateMatch\n  ? immediateMatch[1].split('\\n')\n      .filter(l => l.trim().match(/^\\d+\\.|^[-*]/))\n      .map(l => l.replace(/^\\d+\\.\\s*|^[-*]\\s*/, '').replace(/\\*\\*([^*]+)\\*\\*:/g, '$1:').trim())\n      .filter(Boolean)\n      .slice(0, 4)\n  : [];\n\n// Potential Impact — from Technical Details\nconst sec3Raw = stripCitations(extractSection(groqRaw, '3', 'Technical Details'));\nconst impactLine = (() => {\n  const m = sec3Raw.match(/Potential Impact[:\\s*]+([^\\n]+)/i);\n  return m ? m[1].trim() : '';\n})();\n\n// ── Build impact bullets HTML ─────────────────────────────────────────\nconst impactBulletsHtml = impactLine\n  ? `<li style=\"margin-bottom:6px;\">${impactLine.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</li>`\n  : '<li style=\"margin-bottom:6px;\">Refer to attached advisory for full impact analysis.</li>';\n\n// ── Build actions bullets HTML ────────────────────────────────────────\nconst actionBulletsHtml = immediateLines.length > 0\n  ? immediateLines.map(l =>\n      `<li style=\"margin-bottom:6px;\">${l.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</li>`\n    ).join('\\n')\n  : '<li style=\"margin-bottom:6px;\">Refer to attached advisory for recommended actions.</li>';\n\n// ── Email Body (HTML) ─────────────────────────────────────────────────\nconst body = `<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"UTF-8\"/>\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"/>\n<title>${subject}</title>\n</head>\n<body style=\"margin:0;padding:0;background:#f4f4f4;font-family:'Segoe UI',Calibri,Arial,sans-serif;font-size:14px;color:#222222;\">\n\n<table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#f4f4f4;padding:30px 0;\">\n  <tr>\n    <td align=\"center\">\n      <table width=\"640\" cellpadding=\"0\" cellspacing=\"0\" style=\"background:#ffffff;border-radius:6px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);\">\n\n        <!-- Header -->\n        <tr>\n          <td style=\"background:#1a6bb5;padding:20px 32px;\">\n            <span style=\"font-size:22px;font-weight:700;color:#ffffff;letter-spacing:-0.3px;\">yourorg</span>\n            <span style=\"display:block;font-size:11px;color:rgba(255,255,255,0.75);margin-top:3px;letter-spacing:1.2px;text-transform:uppercase;\">Threat Intelligence</span>\n          </td>\n        </tr>\n\n        <!-- Severity Banner -->\n        <tr>\n          <td style=\"background:${badgeColor};padding:8px 32px;\">\n            <span style=\"color:#ffffff;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;\">\n              &#9632; ${severity} Severity Advisory &nbsp;&mdash;&nbsp; ${advisory_id}\n            </span>\n          </td>\n        </tr>\n\n        <!-- Body -->\n        <tr>\n          <td style=\"padding:28px 32px 8px;\">\n            <p style=\"margin:0 0 16px;line-height:1.7;color:#222;\">Dear Team,</p>\n\n            <p style=\"margin:0 0 16px;line-height:1.7;color:#222;\">\n              Please find below a concise Threat Advisory regarding the\n              <strong>${severity} ${title}</strong>.\n            </p>\n\n            <!-- Summary -->\n            <p style=\"margin:0 0 6px;font-size:14px;font-weight:700;color:#1a1a1a;\">Summary of the Threat</p>\n            <p style=\"margin:0 0 20px;line-height:1.75;color:#333;\">\n              ${summaryShort || 'Please refer to the attached advisory for the full executive summary.'}\n            </p>\n\n            <!-- Potential Impacts -->\n            <p style=\"margin:0 0 8px;font-size:14px;font-weight:700;color:#1a1a1a;\">Potential Impacts</p>\n            <ul style=\"margin:0 0 20px 20px;padding:0;line-height:1.75;color:#333;\">\n              ${impactBulletsHtml}\n              ${exposureLine ? `<li style=\"margin-bottom:6px;\">${exposureLine.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</li>` : ''}\n            </ul>\n\n            <!-- Actions Required -->\n            <p style=\"margin:0 0 8px;font-size:14px;font-weight:700;color:#1a1a1a;\">Actions Required</p>\n            <ul style=\"margin:0 0 24px 20px;padding:0;line-height:1.75;color:#333;\">\n              ${actionBulletsHtml}\n            </ul>\n\n            <p style=\"margin:0 0 24px;line-height:1.7;color:#333;\">\n              Please review the attached advisory for further technical details and recommended actions.\n            </p>\n\n            <p style=\"margin:0 0 4px;line-height:1.7;color:#222;\">Best regards,</p>\n            <p style=\"margin:0 0 28px;line-height:1.7;color:#222;font-weight:600;\">yourorg Threat Intelligence Team</p>\n          </td>\n        </tr>\n\n        <!-- Divider -->\n        <tr>\n          <td style=\"padding:0 32px;\">\n            <hr style=\"border:none;border-top:1px solid #e0e4ea;margin:0;\"/>\n          </td>\n        </tr>\n\n        <!-- Meta footer strip -->\n        <tr>\n          <td style=\"padding:14px 32px;background:#f7f9fb;\">\n            <table width=\"100%\" cellpadding=\"0\" cellspacing=\"0\" style=\"font-size:12px;color:#666;\">\n              <tr>\n                <td><strong>Advisory ID:</strong> ${advisory_id}</td>\n                <td><strong>CVE(s):</strong> ${cves}</td>\n                <td><strong>CVSS:</strong> ${cvss_score}</td>\n                <td><strong>Date:</strong> ${today_date}</td>\n              </tr>\n            </table>\n          </td>\n        </tr>\n\n        <!-- Footer -->\n        <tr>\n          <td style=\"padding:14px 32px 20px;background:#f7f9fb;border-top:1px solid #e0e4ea;\">\n            <p style=\"margin:0 0 3px;font-size:11px;color:#999;\">\n              This report was automatically generated by the yourorg Threat Intelligence Pipeline.\n            </p>\n            <p style=\"margin:0;font-size:11px;color:#bbb;\">\n              CONFIDENTIAL &mdash; For internal use only. Do not forward or distribute without prior approval.\n            </p>\n          </td>\n        </tr>\n\n      </table>\n    </td>\n  </tr>\n</table>\n\n</body>\n</html>`;\n\n// ── Plain text Slack message — exact email format ────────────────────\n\n// Build Potential Impacts bullets\nconst impactBullets = (() => {\n  const bullets = [];\n  if (impactLine) bullets.push(`• ${impactLine}`);\n  if (exposureLine) bullets.push(`• ${exposureLine}`);\n  if (bullets.length === 0) bullets.push('• Refer to attached advisory for full impact analysis.');\n  return bullets.join('\\n');\n})();\n\n// Build Actions Required bullets\nconst actionBullets = (() => {\n  if (immediateLines.length > 0) return immediateLines.map(l => `• ${l}`).join('\\n');\n  return '• Refer to attached advisory for recommended actions.';\n})();\n\n// Summary text\nconst summaryText = summaryShort || 'Please refer to the attached advisory for the full executive summary.';\n\nconst slackMessage = `${subject}\n\nDear Team,\nPlease find below a concise Threat Advisory regarding the ${severity} ${title}.\n\nSummary of the Threat\n${summaryText}\n\nPotential Impacts\n${impactBullets}\n\nActions Required\n${actionBullets}\n\nPlease review the attached advisory for further technical details and recommended actions.\n\nBest regards,\nyourorg Threat Intelligence Team`;\n\n// ── Preserve binary from Convert to Binary2 node ────────────────────\n// The Slack upload node needs the binary file data — we pass it through\nconst binaryData = $input.first().binary || {};\n\nreturn {\n  json: {\n    // Pass through all fields for downstream nodes\n    ...input,\n\n    // Email fields\n    email_subject:       subject,\n    email_body:          body,\n    email_subject_plain: `YourOrg | ${severity} Threat Advisory - ${advisory_id} - ${title}`,\n    slack_message:       slackMessage,\n  },\n  binary: binaryData,\n};\n"
+      },
+      "id": "node-build-email-template3",
+      "name": "Build Email Template3",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4256,
+        1616
+      ]
+    }
+  ],
+  "connections": {
+    "Slack Trigger4": {
+      "main": [
+        [
+          {
+            "node": "Extract URL & Metadata4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract URL & Metadata4": {
+      "main": [
+        [
+          {
+            "node": "Fetch & Extract Content3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch & Extract Content3": {
+      "main": [
+        [
+          {
+            "node": "Build AI Prompt4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build AI Prompt4": {
+      "main": [
+        [
+          {
+            "node": "Prepare Groq Request3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Groq Request3": {
+      "main": [
+        [
+          {
+            "node": "Groq AI Analyzer6",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq AI Analyzer6": {
+      "main": [
+        [
+          {
+            "node": "Format HTML Advisory6",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format HTML Advisory6": {
+      "main": [
+        [
+          {
+            "node": "Convert to Binary6",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert to Binary6": {
+      "main": [
+        [
+          {
+            "node": "Build Email Template3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload Advisory to Slack5": {
+      "main": [
+        [
+          {
+            "node": "Send Advisory Message1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Email Template3": {
+      "main": [
+        [
+          {
+            "node": "Upload Advisory to Slack5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "nodeGroups": []
+}
